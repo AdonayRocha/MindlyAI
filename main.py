@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 import os, requests, json, logging
 from typing import List, Tuple, Any, Optional
 import re
+from keywords.alerts import ALERTS
+from keywords.topics import TOPIC_KEYWORDS
 
 load_dotenv()
 
@@ -69,27 +71,12 @@ def hf_inference(model: str, inputs: str, params: dict = None) -> Any:
     except requests.RequestException as exc:
         logger.exception("Erro de conexão com Hugging Face: %s", exc)
         raise HTTPException(status_code=502, detail=f"Erro de conexão com Hugging Face: {exc}")
-    logger.info("HF response url=%s status=%s", getattr(r, "url", url), r.status_code)
-    if r.status_code != 200:
-        body = r.text
-        logger.error("HuggingFace retornou status=%s body=%s", r.status_code, body[:1000])
-        try:
-            parsed = r.json()
-            err_msg = parsed.get("error") or parsed
-        except Exception:
-            err_msg = body
-        raise HTTPException(status_code=500, detail={"hf_status": r.status_code, "hf_error": str(err_msg), "hf_url": str(getattr(r, "url", url))})
-    try:
-        return r.json()
-    except ValueError:
-        logger.warning("Resposta HF não é JSON: %s", r.text[:300])
-        return {"raw": r.text}
 
 def normalize_emotion_response(resp: Any) -> List[dict]:
     if isinstance(resp, dict) and "labels" in resp and "scores" in resp:
-        return [{"label": l, "score": float(s)} for l, s in zip(resp["labels"], resp["scores"])]
+        return [{"label": l, "score": float(s)} for l, s in zip(resp["labels"], resp["scores"]) ]
     if isinstance(resp, list) and len(resp) > 0 and isinstance(resp[0], dict) and "labels" in resp[0] and "scores" in resp[0]:
-        return [{"label": l, "score": float(s)} for l, s in zip(resp[0]["labels"], resp[0]["scores"])]
+        return [{"label": l, "score": float(s)} for l, s in zip(resp[0]["labels"], resp[0]["scores"]) ]
     if isinstance(resp, list) and len(resp) > 0 and isinstance(resp[0], dict) and "label" in resp[0] and "score" in resp[0]:
         return [{"label": item["label"], "score": float(item["score"])} for item in resp]
     return []
@@ -110,7 +97,7 @@ def parse_generated_field(gen_field: Any) -> Tuple[Optional[Any], Optional[str]]
         return obj, None
     except Exception:
         pass
-    return None, "Não foi possível parsear JSON; conteúdo: " + gen_field[:300]
+    return None, "Não foi possível parsear JSON; conteúdo: " + (gen_field[:300] if isinstance(gen_field, str) else str(gen_field))
 
 def extract_generated_text(gen: Any) -> str:
     if isinstance(gen, list) and len(gen) > 0 and isinstance(gen[0], dict):
@@ -129,9 +116,6 @@ def extract_generated_text(gen: Any) -> str:
 
 
 def is_probable_prompt_echo(prompt: str, gen_text: Any) -> bool:
-    """Heurística simples para detectar quando o modelo retornou o próprio prompt/instrução.
-    Usa sobreposição de tokens e checagem de palavras-chave.
-    """
     try:
         if not isinstance(gen_text, str):
             gen_s = json.dumps(gen_text, ensure_ascii=False)
@@ -144,24 +128,12 @@ def is_probable_prompt_echo(prompt: str, gen_text: Any) -> bool:
             overlap = sum(1 for w in set(p_words) if w in g) / max(1, len(set(p_words)))
             if overlap >= 0.35:
                 return True
-        # keywords often present in the instruction/prompt
         keywords = ["psicólogo", "responda", "faça", "faça:", "paciente", "acolh", "instru", "procure", "ajuda", "sugest"]
         if any(k in g for k in keywords):
             return True
     except Exception:
         return False
     return False
-
-# ---- Keywords / topics / utils -----------------------------------------------------
-ALERTS = ["matar","suicidar","suicídio","me matar","kill","suicide","assassinar","morrer","morreu","morte","depressão","depressivo"]
-
-TOPIC_KEYWORDS = {
-    "trabalho": ["trabalh", "emprego", "demissão", "ser despedido", "cargo", "chefe"],
-    "sono": ["sono", "insônia", "dormi", "acordei"],
-    "alimentação": ["comi", "comer", "fome", "almocei", "jantei"],
-    "ansiedade": ["ansios", "preocup", "nervos", "pânico", "ansiedade"],
-    "relacionamento": ["namor", "caso", "parceir", "família", "amigo", "casar", "casei"]
-}
 
 def detect_alerts(text: str) -> List[str]:
     return [w for w in ALERTS if w in text.lower()]
@@ -183,7 +155,6 @@ def compute_risk_basic(alerts: List[str], topics: List[str]) -> int:
     score += len(topics) * 5
     return min(100, score)
 
-# ---- Endpoints --------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "Saudavel"}
@@ -207,49 +178,22 @@ def analyze(req: Req, api_key: str = Header(None, alias="api-key")):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     text = req.text or ""
-    alerts = detect_alerts(text)
-    topics = simple_topic_extraction(text)
-
-    # 1) Emotion (zero-shot)
-    labels = ["tristeza","alegria","raiva","ansiedade","medo"]
-    try:
-        emo_resp = hf_inference(EMOTION_MODEL, text, params={"candidate_labels": labels, "multi_label": True})
-    except HTTPException:
-        raise
-    emotions = normalize_emotion_response(emo_resp)
-
-    # 2) Risk score
-    risk = 60 if alerts else 0
-    for e in emotions:
-        lab = e.get("label","").lower()
-        s = e.get("score", 0)
-        if lab in ["medo","ansiedade"]:
-            risk += int(s * 20)
-        if lab == "tristeza":
-            risk += int(s * 10)
-    risk = min(100, risk)
-
-    # modo de resposta
     response_mode = req.meta.get("response_mode", "empathetic")
     gen_params = {
         "max_new_tokens": int(os.getenv("GEN_MAX_TOKENS", "200")),
         "temperature": float(os.getenv("GEN_TEMPERATURE", "0.6")),
     }
 
-    # Empathetic (texto livre)
     if response_mode == "empathetic":
-        prompt_empathetic = f"""
-Paciente: {text}
+        prompt_empathetic = f"""Paciente: {text}
 
 Você é um psicólogo clínico experiente. Responda ao paciente em português, de forma empática,
 acolhedora e profissional. Faça:
 1) 1-2 frases de acolhimento (empatia);
 2) 2 sugestões práticas imediatas e seguras;
 3) instrução de procurar ajuda/emergência se necessário;
-Identifique o que a pessoa precisa. Se houver risco, instrua a procurar ajuda imediatamente.
-Responda em texto corrido, sem apresentar o prompt ou explicações sobre o que fez.
+Identifique o que a pessoa precisa. Responda em texto corrido, sem apresentar o prompt ou explicações sobre o que fez.
 """
-        # #DEIXE_AQUI_O_FINE_TUNING
         if GEN_MODEL_MODE == "local":
             gen_text = ollama_generate(prompt_empathetic, model=GEN_MODEL_NAME)
         else:
@@ -257,16 +201,9 @@ Responda em texto corrido, sem apresentar o prompt ou explicações sobre o que 
                 gen = hf_inference(GEN_MODEL_NAME, prompt_empathetic, params=gen_params)
             except HTTPException:
                 raise
-            # Log raw generation response for debugging (trim to avoid huge logs)
-            try:
-                logger.debug("HF raw generation response: %s", json.dumps(gen)[:2000])
-            except Exception:
-                logger.debug("HF raw generation response (non-json): %s", str(gen)[:2000])
             gen_text = extract_generated_text(gen)
 
-        # Detecta echo e aplica fallback (melhor heurística)
         if is_probable_prompt_echo(prompt_empathetic, gen_text) or (isinstance(gen_text, str) and text.strip() in gen_text):
-            logger.info("Detected possible echo; trying fallback prompt.")
             fallback_prompt = f"""{text}
 
 Responda ao paciente em português com uma mensagem curta, empática e direta (3-5 frases)."""
@@ -288,16 +225,13 @@ Responda ao paciente em português com uma mensagem curta, empática e direta (3
 
         final_generated = gen_text
 
-        # Safety guard: if model echoed the instruction/prompt back, return a short empathetic fallback
         if is_probable_prompt_echo(prompt_empathetic, final_generated) or (isinstance(final_generated, str) and text.strip() in final_generated):
-            logger.warning("Generated text looks like an instruction/prompt; applying fallback reply.")
             final_generated = (
                 "Sinto muito que você esteja se sentindo triste. "
                 "Estou aqui para ouvir. Uma sugestão: tente respirar profundamente por um minuto e anotar como se sente. "
                 "Se estiver em risco ou a situação piorar, procure ajuda profissional ou serviços de emergência."
             )
 
-    # Structured (JSON)
     else:
         prompt_structured = f"""Você é um psicólogo especialista. Recebe o texto do paciente abaixo.
 Gere APENAS um JSON válido em português com as chaves:
@@ -308,11 +242,12 @@ Gere APENAS um JSON válido em português com as chaves:
 - suggested_questions: array de 3 strings (perguntas para a próxima sessão)
 
 Texto do paciente:
-\"\"\"{text}\"\"\"
+<<<BEGIN_TEXT>>>
+{text}
+<<<END_TEXT>>>
 
 Retorne apenas JSON válido (sem texto adicional).
 """
-        # #DEIXE_AQUI_O_FINE_TUNING
         if GEN_MODEL_MODE == "local":
             gen_text = ollama_generate(prompt_structured, model=GEN_MODEL_NAME)
         else:
@@ -323,15 +258,9 @@ Retorne apenas JSON válido (sem texto adicional).
             gen_text = extract_generated_text(gen)
 
         parsed_gen, parse_err = parse_generated_field(gen_text)
-        if parsed_gen is not None:
-            final_generated = parsed_gen
-        else:
-            final_generated = gen_text
+        final_generated = parsed_gen if parsed_gen is not None else gen_text
 
-        # For structured output, if parse failed and the model returned the instruction text
         if is_probable_prompt_echo(prompt_structured, final_generated):
-            logger.warning("Structured generation appears to be the prompt; replacing with minimal structured fallback.")
-            # minimal structured fallback to keep response shape
             final_generated = {
                 "summary": "Usuário relata sentir-se triste.",
                 "evidence": [text[:120], text[:120]],
@@ -348,16 +277,4 @@ Retorne apenas JSON válido (sem texto adicional).
                 ]
             }
 
-    response = {
-        "alert": bool(alerts),
-        "alert_words": alerts,
-        "topics": topics,
-        "emotions": emotions,
-        "risk_score": risk,
-        "generated": final_generated
-    }
-
-    if alerts:
-        response["immediate_action"] = "ALERTA: linguagem de risco detectada. Notifique o psicólogo responsável imediatamente e avalie ligar para serviços de emergência/local de apoio."
-
-    return response
+    return {"generated": final_generated}

@@ -1,16 +1,6 @@
-# name=docker-compose.yml
-version: "3.8"
+# docker-compose.yml (versionless) — running mindly only and using host-installed Ollama
 
 services:
-  ollama:
-    image: ghcr.io/ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    restart: unless-stopped
-    volumes:
-      - ollama-data:/var/lib/ollama
-
   mindly:
     build: .
     container_name: mindly
@@ -18,9 +8,4 @@ services:
       - .env
     ports:
       - "8000:8000"
-    depends_on:
-      - ollama
     restart: unless-stopped
-
-volumes:
-  ollama-data:

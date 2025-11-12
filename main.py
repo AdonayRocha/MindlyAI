@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import os, requests, json, logging
 from typing import List, Tuple, Any, Optional
+import re
 
 load_dotenv()
 
@@ -126,6 +127,31 @@ def extract_generated_text(gen: Any) -> str:
         return gen
     return json.dumps(gen, ensure_ascii=False)
 
+
+def is_probable_prompt_echo(prompt: str, gen_text: Any) -> bool:
+    """Heurística simples para detectar quando o modelo retornou o próprio prompt/instrução.
+    Usa sobreposição de tokens e checagem de palavras-chave.
+    """
+    try:
+        if not isinstance(gen_text, str):
+            gen_s = json.dumps(gen_text, ensure_ascii=False)
+        else:
+            gen_s = gen_text
+        p = re.sub(r"\W+", " ", prompt.lower())
+        g = re.sub(r"\W+", " ", gen_s.lower())
+        p_words = [w for w in p.split() if len(w) > 2]
+        if p_words:
+            overlap = sum(1 for w in set(p_words) if w in g) / max(1, len(set(p_words)))
+            if overlap >= 0.35:
+                return True
+        # keywords often present in the instruction/prompt
+        keywords = ["psicólogo", "responda", "faça", "faça:", "paciente", "acolh", "instru", "procure", "ajuda", "sugest"]
+        if any(k in g for k in keywords):
+            return True
+    except Exception:
+        return False
+    return False
+
 # ---- Keywords / topics / utils -----------------------------------------------------
 ALERTS = ["matar","suicidar","suicídio","me matar","kill","suicide","assassinar","morrer","morreu","morte","depressão","depressivo"]
 
@@ -231,10 +257,15 @@ Responda em texto corrido, sem apresentar o prompt ou explicações sobre o que 
                 gen = hf_inference(GEN_MODEL_NAME, prompt_empathetic, params=gen_params)
             except HTTPException:
                 raise
+            # Log raw generation response for debugging (trim to avoid huge logs)
+            try:
+                logger.debug("HF raw generation response: %s", json.dumps(gen)[:2000])
+            except Exception:
+                logger.debug("HF raw generation response (non-json): %s", str(gen)[:2000])
             gen_text = extract_generated_text(gen)
 
-        # Detecta echo e aplica fallback
-        if isinstance(gen_text, str) and (text.strip() in gen_text or "Você é um psicólogo" in gen_text or gen_text.strip().startswith("Paciente:")):
+        # Detecta echo e aplica fallback (melhor heurística)
+        if is_probable_prompt_echo(prompt_empathetic, gen_text) or (isinstance(gen_text, str) and text.strip() in gen_text):
             logger.info("Detected possible echo; trying fallback prompt.")
             fallback_prompt = f"""{text}
 
@@ -256,6 +287,15 @@ Responda ao paciente em português com uma mensagem curta, empática e direta (3
                     pass
 
         final_generated = gen_text
+
+        # Safety guard: if model echoed the instruction/prompt back, return a short empathetic fallback
+        if is_probable_prompt_echo(prompt_empathetic, final_generated) or (isinstance(final_generated, str) and text.strip() in final_generated):
+            logger.warning("Generated text looks like an instruction/prompt; applying fallback reply.")
+            final_generated = (
+                "Sinto muito que você esteja se sentindo triste. "
+                "Estou aqui para ouvir. Uma sugestão: tente respirar profundamente por um minuto e anotar como se sente. "
+                "Se estiver em risco ou a situação piorar, procure ajuda profissional ou serviços de emergência."
+            )
 
     # Structured (JSON)
     else:
@@ -287,6 +327,26 @@ Retorne apenas JSON válido (sem texto adicional).
             final_generated = parsed_gen
         else:
             final_generated = gen_text
+
+        # For structured output, if parse failed and the model returned the instruction text
+        if is_probable_prompt_echo(prompt_structured, final_generated):
+            logger.warning("Structured generation appears to be the prompt; replacing with minimal structured fallback.")
+            # minimal structured fallback to keep response shape
+            final_generated = {
+                "summary": "Usuário relata sentir-se triste.",
+                "evidence": [text[:120], text[:120]],
+                "hypotheses": ["Tristeza situacional", "Possível alteração de humor"],
+                "recommendations": [
+                    "Respirar profundamente por alguns minutos",
+                    "Fazer uma caminhada curta",
+                    "Procurar contato com pessoa de confiança ou profissional"
+                ],
+                "suggested_questions": [
+                    "Quando começou esse sentimento?",
+                    "Há algo que costuma ajudar quando se sente assim?",
+                    "Você tem alguém com quem conversar no momento?"
+                ]
+            }
 
     response = {
         "alert": bool(alerts),

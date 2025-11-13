@@ -1,3 +1,7 @@
+dist
+build
+Dockerfile
+docker-compose.yml
 .venv
 venv
 env
@@ -8,6 +12,4 @@ __pycache__
 .Python
 dist
 build
-Dockerfile
-docker-compose.yml
 .env

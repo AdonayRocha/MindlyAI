@@ -9,3 +9,20 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
+
+  ollama:
+    # NOTE: adjust image/tag if the official image differs. Common image: "ollama/ollama:latest"
+    image: ollama/ollama:latest
+    container_name: ollama
+    # Expose Ollama API port so other services in the compose network can reach it using the service name 'ollama'
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    # Persist Ollama runtime data/models (optional). Create .ollama in repo or change path as needed.
+    volumes:
+      - ./.ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -18,7 +18,7 @@ TOPIC_KEYWORDS = {
     "relacionamento": [
         "namor", "namoro", "caso", "parceir", "parceiro", "parceira", "família", "familia", "amigo",
         "amizade", "casar", "casei", "divórcio", "divorcio", "separação", "separacao", "traição", "traicao",
-        "ciúmes", "ciumes", "briga", "discussão", "discussao", "termino", "término"
+        "ciúmes", "ciumes", "briga", "discussão", "discussao", "termino", "término", "casamento", "casório"
     ],
     "saúde": [
         "doença", "doenca", "doente", "gripe", "resfriado", "resfriada", "febre", "tosse", "coriza", "dor de garganta",

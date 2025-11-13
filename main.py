@@ -25,7 +25,9 @@ GEN_MODEL_MODE = os.getenv("GEN_MODEL_MODE", "hf")     # "hf" ou "local"
 GEN_MODEL_NAME = os.getenv("GEN_MODEL_NAME", "ssheifer/distilbart-cnn-12-6")
 ALLOWED = os.getenv("API_KEYS", "meu_token").split(",")
 
-HF_ROUTER = "https://router.huggingface.co/hf-inference/models/"
+# Use the public Hugging Face Inference API base URL (router URL caused non-JSON/html responses).
+# If you're using Hugging Face Router Inference, change this to the router URL you need.
+HF_ROUTER = "https://api-inference.huggingface.co/models/"
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "ollama")
 OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
 
@@ -42,16 +44,85 @@ def ollama_generate(prompt: str, model: str = None) -> str:
     Retorna string com a resposta ou lança HTTPException.
     """
     model = model or GEN_MODEL_NAME
-    try:
-        url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/generate"
+    # Attempt multiple possible Ollama endpoints to be resilient to image/version differences.
+    model = model or GEN_MODEL_NAME
+    base = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
+    endpoints = [
+        "/api/generate",
+        "/v1/generate",
+        "/api/complete",
+        "/v1/completions",
+        "/api/predict",
+    ]
+
+    errors = []
+    for ep in endpoints:
+        url = base + ep
         payload = {"model": model, "prompt": prompt, "stream": False}
-        r = requests.post(url, json=payload, timeout=120)
-        r.raise_for_status()
-        data = r.json()
-        return data.get("response", "") or data.get("text", "")
-    except Exception as e:
-        logger.exception("Erro ao chamar Ollama: %s", e)
-        raise HTTPException(status_code=500, detail="Erro ao gerar resposta com Ollama")
+        try:
+            logger.info("Attempting Ollama endpoint %s", url)
+            r = requests.post(url, json=payload, timeout=30)
+            # If endpoint not found, try next
+            if r.status_code == 404:
+                logger.debug("Endpoint %s returned 404", url)
+                errors.append((url, 404, r.text[:400]))
+                continue
+            r.raise_for_status()
+            # parse response if JSON
+            try:
+                data = r.json()
+            except ValueError:
+                data = None
+            # Try common fields
+            if isinstance(data, dict):
+                for key in ("response", "text", "output", "generated_text", "result"):
+                    if key in data and data[key]:
+                        return data[key]
+                # If 'choices' style response
+                if "choices" in data and isinstance(data["choices"], list) and data["choices"]:
+                    ch = data["choices"][0]
+                    if isinstance(ch, dict):
+                        for k in ("text", "message", "output"):
+                            if k in ch and ch[k]:
+                                return ch[k]
+            # Fallback: if raw text returned
+            text = r.text
+            if text:
+                return text
+            # Nothing usable, record and try next
+            errors.append((url, r.status_code, r.text[:400]))
+        except requests.ConnectionError as ce:
+            logger.warning("ConnectionError to Ollama endpoint %s: %s", url, ce)
+            errors.append((url, "connection", str(ce)))
+            continue
+        except requests.HTTPError as he:
+            logger.warning("HTTP error from Ollama endpoint %s: %s", url, he)
+            errors.append((url, "http", str(he)))
+            continue
+        except Exception as e:
+            logger.exception("Unexpected error calling Ollama endpoint %s: %s", url, e)
+            errors.append((url, "exception", str(e)))
+            continue
+
+    # If we reached here, all attempts failed. Try HF fallback if configured.
+    logger.error("All Ollama endpoints failed: %s", errors)
+    if HF_TOKEN:
+        try:
+            logger.info("Attempting Hugging Face fallback because Ollama failed")
+            gen_params = {
+                "max_new_tokens": int(os.getenv("GEN_MAX_TOKENS", "200")),
+                "temperature": float(os.getenv("GEN_TEMPERATURE", "0.6")),
+            }
+            hf_resp = hf_inference(model, prompt, params=gen_params)
+            return extract_generated_text(hf_resp)
+        except HTTPException as he:
+            logger.exception("HF fallback also failed: %s", he.detail)
+            raise HTTPException(status_code=502, detail=f"Ollama inacessível; fallback to Hugging Face failed: {he.detail}")
+        except Exception as e:
+            logger.exception("Erro inesperado durante fallback HF: %s", e)
+            raise HTTPException(status_code=502, detail="Ollama inacessível e tentativa de fallback falhou")
+    else:
+        raise HTTPException(status_code=502, detail="Ollama inacessível e Hugging Face token não configurado (MINDLY_TOKEN)")
 
 def hf_inference(model: str, inputs: str, params: dict = None) -> Any:
     """
@@ -68,6 +139,15 @@ def hf_inference(model: str, inputs: str, params: dict = None) -> Any:
     try:
         logger.info("Chamando HF model=%s url=%s params=%s", model, url, json.dumps(params or {}))
         r = requests.post(url, json=payload, headers=headers, timeout=40)
+        r.raise_for_status()
+        # Try to return parsed JSON; if response isn't JSON, return raw text
+        text = r.text
+        # Log a truncated preview to help debugging (do not log secrets)
+        logger.debug("HF response preview: %s", text[:1000])
+        try:
+            return r.json()
+        except ValueError:
+            return text
     except requests.RequestException as exc:
         logger.exception("Erro de conexão com Hugging Face: %s", exc)
         raise HTTPException(status_code=502, detail=f"Erro de conexão com Hugging Face: {exc}")
@@ -121,7 +201,17 @@ def is_probable_prompt_echo(prompt: str, gen_text: Any) -> bool:
             gen_s = json.dumps(gen_text, ensure_ascii=False)
         else:
             gen_s = gen_text
-        p = re.sub(r"\W+", " ", prompt.lower())
+
+        # Remove large user-provided text blocks from the prompt before comparing to avoid
+        # false positives. Common patterns: a leading 'Paciente: <user text>' block or
+        # markers like <<<BEGIN_TEXT>>> ... <<<END_TEXT>>>.
+        p_raw = prompt
+        # strip 'Paciente: ...' block (till a blank line) if present
+        p_raw = re.sub(r"(?is)paciente:\s.*?(?:\n\s*\n|$)", " ", p_raw)
+        # strip BEGIN/END markers
+        p_raw = re.sub(r"(?is)<<<begin_text>>>.*?<<<end_text>>>", " ", p_raw)
+
+        p = re.sub(r"\W+", " ", p_raw.lower())
         g = re.sub(r"\W+", " ", gen_s.lower())
         p_words = [w for w in p.split() if len(w) > 2]
         if p_words:
@@ -154,10 +244,10 @@ def compute_risk_basic(alerts: List[str], topics: List[str]) -> int:
         score += 60
     score += len(topics) * 5
     return min(100, score)
-
 @app.get("/health")
 def health():
     return {"status": "Saudavel"}
+
 
 @app.post("/detect")
 def detect(req: Req):
@@ -171,6 +261,7 @@ def detect(req: Req):
         "topics": topics,
         "risk_score": risk
     }
+
 
 @app.post("/analyze")
 def analyze(req: Req, api_key: str = Header(None, alias="api-key")):
@@ -199,9 +290,19 @@ Identifique o que a pessoa precisa. Responda em texto corrido, sem apresentar o 
         else:
             try:
                 gen = hf_inference(GEN_MODEL_NAME, prompt_empathetic, params=gen_params)
-            except HTTPException:
-                raise
-            gen_text = extract_generated_text(gen)
+            except HTTPException as exc:
+                # If the chosen HF model is not available (410/Gone) or other HF error,
+                # try a configurable fallback model before failing the request.
+                logger.warning("Hugging Face primary model failed: %s", exc.detail)
+                fallback_model = os.getenv("HF_FALLBACK_MODEL", "google/flan-t5-small")
+                try:
+                    logger.info("Attempting HF fallback model=%s", fallback_model)
+                    gen = hf_inference(fallback_model, prompt_empathetic, params=gen_params)
+                except HTTPException as exc2:
+                    logger.exception("Fallback HF model also failed: %s", exc2.detail)
+                    # leave gen as None so later logic can apply the static fallback
+                    gen = None
+            gen_text = extract_generated_text(gen) if gen is not None else ""
 
         if is_probable_prompt_echo(prompt_empathetic, gen_text) or (isinstance(gen_text, str) and text.strip() in gen_text):
             fallback_prompt = f"""{text}
@@ -220,8 +321,17 @@ Responda ao paciente em português com uma mensagem curta, empática e direta (3
                     gen_text_fb = extract_generated_text(gen_fb)
                     if isinstance(gen_text_fb, str) and len(gen_text_fb.strip()) > 5:
                         gen_text = gen_text_fb
-                except HTTPException:
-                    pass
+                except HTTPException as exc_fb:
+                    logger.warning("HF fallback attempt failed: %s", exc_fb.detail)
+                    # try configured HF fallback model for the short prompt
+                    fb_model = os.getenv("HF_FALLBACK_MODEL", "google/flan-t5-small")
+                    try:
+                        gen_fb2 = hf_inference(fb_model, fallback_prompt, params={"temperature": 0.7, "max_new_tokens": 120})
+                        gen_text_fb2 = extract_generated_text(gen_fb2)
+                        if isinstance(gen_text_fb2, str) and len(gen_text_fb2.strip()) > 5:
+                            gen_text = gen_text_fb2
+                    except HTTPException:
+                        pass
 
         final_generated = gen_text
 

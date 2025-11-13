@@ -96,7 +96,7 @@ curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json" -
 ## Variáveis de ambiente principais
 - `API_KEYS`: chaves de acesso à API (separadas por vírgula)
 - `GROQ_API_KEY`: chave de acesso ao Groq (obrigatória para geração)
-- `GEN_MODEL_MODE`: "hf" (Hugging Face) ou "local" (Ollama) — atualmente só Groq está ativo
+- `GEN_MODEL_MODE`: "hf" (Hugging Face). Atualmente só Groq está ativo
 - `GEN_MODEL_NAME`: nome/slug do modelo
 - `GEN_TEMPERATURE`, `GEN_MAX_TOKENS`: parâmetros de geração
 

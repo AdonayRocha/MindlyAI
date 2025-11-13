@@ -9,6 +9,6 @@ __pycache__/
 .idea/
 .vscode/
 .env.local
-.env.*
+.env
 *.log
 .ollama/

@@ -35,7 +35,7 @@ Recebe um texto e retorna:
 }
 ```
 
-### `/analyze` (POST)
+### `/speak` (POST)
 Recebe um texto e (opcionalmente) metadados, e retorna uma resposta empática ou estruturada, gerada por IA.
 - Pode ser usada para acolhimento, orientação ou triagem.
 - Requer header `api-key` (veja `.env`)
@@ -88,9 +88,9 @@ Acesse a documentação interativa em: [http://localhost:8000/docs](http://local
 curl -X POST http://localhost:8000/detect -H "Content-Type: application/json" -d '{"text":"Estou me sentindo muito triste ultimamente"}'
 ```
 
-### Analyze
+### Speak
 ```powershell
-curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json" -H "api-key: admin" -d '{"text":"Estou me sentindo muito triste ultimamente"}'
+curl -X POST http://localhost:8000/speak -H "Content-Type: application/json" -H "api-key: admin" -d '{"text":"Estou me sentindo muito triste ultimamente"}'
 ```
 
 ## Variáveis de ambiente principais

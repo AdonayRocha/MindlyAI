@@ -5,4 +5,4 @@ attach routes to the FastAPI application. This avoids circular imports and
 keeps endpoint logic modular.
 """
 
-__all__ = ["health", "detect"]
+__all__ = ["health", "detect", "speak", "analyze"]

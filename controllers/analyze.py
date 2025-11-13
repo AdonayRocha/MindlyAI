@@ -15,40 +15,24 @@ def register(app, ALLOWED):
 
         client = Groq(api_key=GROQ_API_KEY)
         text = req.text or ""
-        response_mode = req.meta.get("response_mode", "empathetic")
+        response_mode = req.meta.get("response_mode", "insight")
 
-        if response_mode == "empathetic":
-            prompt = f"""Paciente: {text}
+        if response_mode == "insight":
+            prompt = f"""Texto do paciente: {text}
 
-Você é um psicólogo clínico experiente. Responda ao paciente em português, de forma empática, acolhedora e profissional. Faça:
-1)Frases de acolhimento (empatia);
-2)Sugestões práticas imediatas e seguras;
-3) instrução de procurar ajuda/emergência se necessário;
-Identifique o que a pessoa precisa. Responda em texto corrido, sem apresentar o prompt ou explicações sobre o que fez.
-Não diga listas numeradas, apenas frases conectadas.
-Não enumere itens
-Seja breve, claro e direto
-Você deve ajudar a pessoa a se sentir melhor e segura.
-"""
-        else:
-            prompt = f"""
-Paciente: {text}
-
-Você é um psicólogo clínico experiente e empático. Responda em português, com acolhimento genuíno e linguagem simples. 
-Sua resposta deve transmitir calma, segurança e compreensão. 
-
-Objetivos:
-- Acolha o que a pessoa sente, demonstrando empatia e escuta genuína.
-- Ofereça orientações práticas e seguras que possam ajudar no momento.
-- Incentive a buscar apoio profissional ou serviços de emergência se houver risco imediato.
+Você é um psicólogo clínico experiente. Analise o texto acima e gere INSIGHTS para o psicólogo sobre pontos de atenção, possíveis focos para trabalhar, sinais de risco, temas recorrentes e sugestões de abordagem.
 
 Regras:
-- Escreva em texto corrido, sem listas, tópicos ou numeração.
-- Seja breve, direto e humano, sem repetir o texto do paciente.
-- Não explique o que está fazendo, apenas responda de forma natural e acolhedora.
-- Mantenha sempre um tom de apoio emocional, empatia e segurança.
-- Se identificar sinais de perigo iminente (como risco de suicídio, automutilação ou violência), oriente de forma clara e cuidadosa para que a pessoa procure ajuda humana imediata — como familiares, amigos de confiança, um profissional de saúde mental ou o serviço de emergência local (como o 188 no Brasil).
+- Escreva em português, de forma clara, profissional e direta.
+- Não repita o texto do paciente.
+- Não escreva para o paciente, escreva para o psicólogo.
+- Destaque possíveis hipóteses, temas sensíveis, fatores de risco e oportunidades de intervenção.
+- Seja breve, objetivo e prático.
+- Não use listas numeradas, escreva em texto corrido.
+- Não explique o que está fazendo, apenas traga os insights.
 """
+        else:
+            prompt = f"Texto do paciente: {text}\n\nGere insights clínicos para o psicólogo."
 
         messages = [
             {"role": "user", "content": prompt}
@@ -69,4 +53,5 @@ Regras:
         for chunk in completion:
             result += chunk.choices[0].delta.content or ""
 
-        return {"generated": result}
+        return {"insights": result}
+

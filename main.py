@@ -6,7 +6,7 @@ from groq import Groq
 from typing import List
 from keywords.alerts import ALERTS
 from keywords.topics import TOPIC_KEYWORDS
-from controllers import analyze, detect, health
+from controllers import speak, detect, health, analyze
 
 load_dotenv()
 
@@ -35,5 +35,6 @@ def compute_risk_basic(alerts, topics):
 	return score
 
 analyze.register(app, ALLOWED)
+speak.register(app, ALLOWED)
 detect.register(app, detect_alerts, simple_topic_extraction, compute_risk_basic)
 health.register(app)

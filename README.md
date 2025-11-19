@@ -53,6 +53,24 @@ Recebe um texto e (opcionalmente) metadados, e retorna uma resposta empática ou
 }
 ```
 
+### `/analyze` (POST)
+Recebe um texto e (opcionalmente) metadados, e retorna insights clínicos para o psicólogo sobre pontos de atenção, possíveis focos para trabalhar, sinais de risco, temas recorrentes e sugestões de abordagem.
+- Pode ser usada para auxiliar o psicólogo na análise do paciente.
+- Requer header `api-key` (veja `.env`)
+**Exemplo de request:**
+```json
+{
+  "text": "Tenho me sentido muito ansioso e sem vontade de sair de casa.",
+  "meta": { "response_mode": "insight" }
+}
+```
+**Exemplo de resposta:**
+```json
+{
+  "insights": "O paciente apresenta sinais de ansiedade e possível isolamento social. Recomenda-se investigar fatores desencadeantes, avaliar o impacto no funcionamento diário e explorar estratégias de enfrentamento. Atenção para possíveis sintomas depressivos associados."
+}
+```
+
 ## Como usar o MindlyAI (passo a passo)
 
 ### 1. Pré-requisitos
@@ -91,6 +109,11 @@ curl -X POST http://localhost:8000/detect -H "Content-Type: application/json" -d
 ### Speak
 ```powershell
 curl -X POST http://localhost:8000/speak -H "Content-Type: application/json" -H "api-key: admin" -d '{"text":"Estou me sentindo muito triste ultimamente"}'
+```
+
+### Analyze
+```powershell
+curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json" -H "api-key: admin" -d '{"text":"Tenho me sentido muito ansioso e sem vontade de sair de casa.","meta": {"response_mode": "insight"}}'
 ```
 
 ## Variáveis de ambiente principais
